@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <setjmp.h>
 #include <utility>
+#include <cstdint>
 
 sigjmp_buf env;
 
