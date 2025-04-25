@@ -43,10 +43,7 @@ void try_access_memory(uintptr_t addr) {
 
 #elif defined(__APPLE__)
 #include <unistd.h>
-#include <mach/task.h>
-#include <mach/vm_map.h>
-#include <mach/mach_vm.h>
-#include <mach/vm_region.h>
+#include <mach/mach.h>
 #include <sys/mman.h>
 
 static sigjmp_buf env;
