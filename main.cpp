@@ -47,13 +47,39 @@ void try_access_memory(uintptr_t addr) {
 #include <mach/mach_vm.h>
 #include <mach/vm_region.h>
 #include <sys/mman.h>
-#include <pthread.h> 
+#include <pthread.h>
 
+// Global sigjmp_buf for signal handling
 static sigjmp_buf env;
 
 void segv_handler(int sig) {
     std::cerr << "    [!] Caught SIGSEGV at signal: " << sig << "\n";
     siglongjmp(env, 1);
+}
+
+// Check if an address is readable
+bool is_address_readable(uintptr_t addr) {
+    mach_vm_address_t address = addr;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    memory_object_name_t object;
+    kern_return_t kr = mach_vm_region(mach_task_self(),
+                                      &address,
+                                      &size,
+                                      VM_REGION_BASIC_INFO_64,
+                                      reinterpret_cast<vm_region_info_t>(&info),
+                                      &count,
+                                      &object);
+    if (kr != KERN_SUCCESS) {
+        std::cout << "    [!] mach_vm_region failed for 0x" << std::hex << addr
+                  << ": " << mach_error_string(kr) << std::dec << "\n";
+        return false;
+    }
+    bool readable = (info.protection & VM_PROT_READ) != 0;
+    std::cout << "    [*] Address 0x" << std::hex << addr << " is "
+              << (readable ? "readable" : "not readable") << std::dec << "\n";
+    return readable;
 }
 
 std::pair<void*, void*> get_stack_bounds() {
@@ -94,11 +120,16 @@ std::pair<void*, void*> get_heap_bounds() {
 void try_access_memory(uintptr_t addr) {
     std::cout << "    [*] Setting up sigsetjmp for address: 0x"
               << std::hex << addr << std::dec << "\n";
+    if (!is_address_readable(addr)) {
+        std::cout << "    [!] Skipping access to non-readable address 0x"
+                  << std::hex << addr << std::dec << "\n";
+        return;
+    }
     if (sigsetjmp(env, 1) == 0) {
         std::cout << "    [*] Attempting to access memory at address: 0x"
                   << std::hex << addr << std::dec << "\n";
         volatile int* ptr = reinterpret_cast<int*>(addr);
-        volatile int value = *ptr;
+        volatile int value = *ptr; // Force memory access
         std::cout << "    [*] Value: " << value << "\n";
     } else {
         std::cout << "    [+] Recovered from segmentation fault.\n";
@@ -111,6 +142,7 @@ void try_access_memory(uintptr_t addr) {
 #include <string>
 #include <sstream>
 
+// Global sigjmp_buf for signal handling
 static sigjmp_buf env;
 
 void segv_handler(int sig) {
@@ -165,7 +197,7 @@ void try_access_memory(uintptr_t addr) {
         std::cout << "    [*] Attempting to access memory at address: 0x"
                   << std::hex << addr << std::dec << "\n";
         volatile int* ptr = reinterpret_cast<int*>(addr);
-        volatile int value = *ptr;
+        volatile int value = *ptr; // Force memory access
         std::cout << "    [*] Value: " << value << "\n";
     } else {
         std::cout << "    [+] Recovered from segmentation fault.\n";
@@ -176,27 +208,22 @@ void try_access_memory(uintptr_t addr) {
 #error "Unsupported platform"
 #endif
 
-void test_memory_range(uintptr_t start, uintptr_t end, std::string name) 
-{
-    std::cout << "[*] " << name << std::endl;
-    std::cout << "[*] " << name << " start - 1: " << start - 1 << "\n";
-    try_access_memory(start - 1);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " start: " << start << "\n";
-    try_access_memory(start);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " middle: " << start + ((end - start) / 2) << "\n";
-    try_access_memory(start + ((end - start) / 2));
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " end - 1: " << end - 1 << "\n";
-    try_access_memory(end - 1);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " end: " << end << "\n";
-    try_access_memory(end);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " end + 1: " << end + 1 << "\n";
-    try_access_memory(end + 1);
-    std::cout << std::endl;
+void test_memory_range(uintptr_t start, uintptr_t end, const std::string& name) {
+    std::cout << "[*] Testing " << name << " range: 0x" << std::hex << start
+              << " - 0x" << end << std::dec << "\n";
+    std::cout << "[*] " << name << " start - 1: 0x" << std::hex << (start - 1) << std::dec << "\n";
+    try_access_memory(start - 1); std::cout << "\n";
+    std::cout << "[*] " << name << " start: 0x" << std::hex << start << std::dec << "\n";
+    try_access_memory(start); std::cout << "\n";
+    std::cout << "[*] " << name << " middle: 0x"
+              << std::hex << (start + (end - start) / 2) << std::dec << "\n";
+    try_access_memory(start + (end - start) / 2); std::cout << "\n";
+    std::cout << "[*] " << name << " end - 1: 0x" << std::hex << (end - 1) << std::dec << "\n";
+    try_access_memory(end - 1); std::cout << "\n";
+    std::cout << "[*] " << name << " end: 0x" << std::hex << end << std::dec << "\n";
+    try_access_memory(end); std::cout << "\n";
+    std::cout << "[*] " << name << " end + 1: 0x" << std::hex << (end + 1) << std::dec << "\n";
+    try_access_memory(end + 1); std::cout << "\n";
 }
 
 int main() {
@@ -206,10 +233,11 @@ int main() {
     auto [stack_start, stack_end] = get_stack_bounds();
     auto [heap_start, heap_end] = get_heap_bounds();
 #else
+    // Set up SIGSEGV handler for POSIX platforms
     struct sigaction sa;
     sa.sa_handler = segv_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_SIGINFO; 
+    sa.sa_flags = SA_RESTART | SA_SIGINFO;
     if (sigaction(SIGSEGV, &sa, nullptr) != 0) {
         std::cerr << "[!] Failed to set up SIGSEGV handler\n";
         return 1;
