@@ -53,6 +53,8 @@ std::pair<void*, void*> get_stack_bounds() {
                                       &count,
                                       &object);
     if (kr != KERN_SUCCESS) {
+        std::cerr << "mach_vm_region failed: " << mach_error_string(kr) << "\n";
+        return {nullptr, nullptr};
     }
     return { reinterpret_cast<void*>(address),
              reinterpret_cast<void*>(address + size) };
