@@ -5,7 +5,7 @@
 #include <setjmp.h>
 #include <signal.h>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__MSYS__)
 #include <windows.h>
 
 std::pair<void*, void*> get_stack_bounds() {
@@ -49,7 +49,6 @@ void try_access_memory(uintptr_t addr) {
 #include <sys/mman.h>
 #include <pthread.h>
 
-// Global sigjmp_buf for signal handling
 static sigjmp_buf env;
 
 void segv_handler(int sig) {
@@ -57,7 +56,6 @@ void segv_handler(int sig) {
     siglongjmp(env, 1);
 }
 
-// Check if an address is readable
 bool is_address_readable(uintptr_t addr) {
     mach_vm_address_t address = addr;
     mach_vm_size_t size = 0;
@@ -129,7 +127,7 @@ void try_access_memory(uintptr_t addr) {
         std::cout << "    [*] Attempting to access memory at address: 0x"
                   << std::hex << addr << std::dec << "\n";
         volatile int* ptr = reinterpret_cast<int*>(addr);
-        volatile int value = *ptr; // Force memory access
+        volatile int value = *ptr;
         std::cout << "    [*] Value: " << value << "\n";
     } else {
         std::cout << "    [+] Recovered from segmentation fault.\n";
@@ -142,7 +140,6 @@ void try_access_memory(uintptr_t addr) {
 #include <string>
 #include <sstream>
 
-// Global sigjmp_buf for signal handling
 static sigjmp_buf env;
 
 void segv_handler(int sig) {
@@ -197,7 +194,88 @@ void try_access_memory(uintptr_t addr) {
         std::cout << "    [*] Attempting to access memory at address: 0x"
                   << std::hex << addr << std::dec << "\n";
         volatile int* ptr = reinterpret_cast<int*>(addr);
-        volatile int value = *ptr; // Force memory access
+        volatile int value = *ptr;
+        std::cout << "    [*] Value: " << value << "\n";
+    } else {
+        std::cout << "    [+] Recovered from segmentation fault.\n";
+    }
+}
+
+#elif defined(__MSYS__)
+#include <windows.h>
+#include <unistd.h>
+
+static sigjmp_buf env;
+
+void segv_handler(int sig) {
+    std::cerr << "    [!] Caught SIGSEGV at signal: " << sig << "\n";
+    siglongjmp(env, 1);
+}
+
+bool is_address_readable(uintptr_t addr) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) {
+        std::cout << "    [!] VirtualQuery failed for 0x" << std::hex << addr << std::dec << "\n";
+        return false;
+    }
+    bool readable = (mbi.State & MEM_COMMIT) != 0 &&
+                    (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE)) != 0;
+    if (readable) {
+        uintptr_t region_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (addr >= region_end - sizeof(int)) {
+            std::cout << "    [!] Address 0x" << std::hex << addr
+                      << " is too close to region end 0x" << region_end << std::dec << "\n";
+            return false;
+        }
+    }
+    std::cout << "    [*] Address 0x" << std::hex << addr << " is "
+              << (readable ? "readable" : "not readable") << std::dec << "\n";
+    return readable;
+}
+
+std::pair<void*, void*> get_stack_bounds() {
+    MEMORY_BASIC_INFORMATION mbi;
+    void* local_var = &mbi;
+    if (VirtualQuery(local_var, &mbi, sizeof(mbi)) == 0) {
+        std::cerr << "VirtualQuery failed for stack\n";
+        return {nullptr, nullptr};
+    }
+    void* stack_top = mbi.BaseAddress;
+    void* stack_bottom = mbi.AllocationBase;
+    return {stack_bottom, stack_top};
+}
+
+std::pair<void*, void*> get_heap_bounds() {
+    void* heap_alloc = HeapAlloc(GetProcessHeap(), 0, 1);
+    if (!heap_alloc) {
+        std::cerr << "HeapAlloc failed\n";
+        return {nullptr, nullptr};
+    }
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(heap_alloc, &mbi, sizeof(mbi)) == 0) {
+        std::cerr << "VirtualQuery failed for heap\n";
+        HeapFree(GetProcessHeap(), 0, heap_alloc);
+        return {nullptr, nullptr};
+    }
+    void* heap_base = mbi.AllocationBase;
+    void* heap_end = static_cast<char*>(mbi.BaseAddress) + mbi.RegionSize;
+    HeapFree(GetProcessHeap(), 0, heap_alloc);
+    return {heap_base, heap_end};
+}
+
+void try_access_memory(uintptr_t addr) {
+    std::cout << "    [*] Setting up sigsetjmp for address: 0x"
+              << std::hex << addr << std::dec << "\n";
+    if (!is_address_readable(addr)) {
+        std::cout << "    [!] Skipping access to non-readable address 0x"
+                  << std::hex << addr << std::dec << "\n";
+        return;
+    }
+    if (sigsetjmp(env, 1) == 0) {
+        std::cout << "    [*] Attempting to access memory at address: 0x"
+                  << std::hex << addr << std::dec << "\n";
+        volatile int* ptr = reinterpret_cast<int*>(addr);
+        volatile int value = *ptr;
         std::cout << "    [*] Value: " << value << "\n";
     } else {
         std::cout << "    [+] Recovered from segmentation fault.\n";
@@ -233,7 +311,6 @@ int main() {
     auto [stack_start, stack_end] = get_stack_bounds();
     auto [heap_start, heap_end] = get_heap_bounds();
 #else
-    // Set up SIGSEGV handler for POSIX platforms
     struct sigaction sa;
     sa.sa_handler = segv_handler;
     sigemptyset(&sa.sa_mask);
