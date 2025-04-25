@@ -43,25 +43,27 @@ void try_access_memory(uintptr_t addr) {
 
 #elif defined(__APPLE__)
 #include <unistd.h>
-#include <mach/mach.h> 
-#include <mach/mach_vm.h> 
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/vm_region.h>
 #include <sys/mman.h>
 
 static sigjmp_buf env;
 
 void segv_handler(int sig) {
+    std::cerr << "    [!] Caught SIGSEGV at signal: " << sig << "\n";
     siglongjmp(env, 1);
 }
 
 std::pair<void*, void*> get_stack_bounds() {
-    vm_address_t address = reinterpret_cast<vm_address_t>(&address);
+    void* stack_top = &stack_top;
+    mach_vm_address_t address = reinterpret_cast<mach_vm_address_t>(stack_top);
     mach_vm_size_t size = 0;
     vm_region_basic_info_data_64_t info;
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     memory_object_name_t object;
     kern_return_t kr = mach_vm_region(mach_task_self(),
-                                      &reinterpret_cast<mach_vm_address_t&>(address),
+                                      &address,
                                       &size,
                                       VM_REGION_BASIC_INFO_64,
                                       reinterpret_cast<vm_region_info_t>(&info),
@@ -71,24 +73,50 @@ std::pair<void*, void*> get_stack_bounds() {
         std::cerr << "mach_vm_region failed: " << mach_error_string(kr) << "\n";
         return {nullptr, nullptr};
     }
+    std::cout << "Stack region: 0x" << std::hex << address << " - 0x"
+              << (address + size) << std::dec << "\n";
     return { reinterpret_cast<void*>(address),
              reinterpret_cast<void*>(address + size) };
 }
 
 std::pair<void*, void*> get_heap_bounds() {
-    void* heap_end = sbrk(0);
-    long pagesize = sysconf(_SC_PAGESIZE);
-    void* heap_start = reinterpret_cast<void*>(
-        (reinterpret_cast<uintptr_t>(heap_end) / pagesize - 1000) * pagesize);
-    return {heap_start, heap_end};
+    void* sample_alloc = malloc(1);
+    if (!sample_alloc) {
+        std::cerr << "Failed to allocate memory for heap detection\n";
+        return {nullptr, nullptr};
+    }
+    mach_vm_address_t address = reinterpret_cast<mach_vm_address_t>(sample_alloc);
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    memory_object_name_t object;
+    kern_return_t kr = mach_vm_region(mach_task_self(),
+                                      &address,
+                                      &size,
+                                      VM_REGION_BASIC_INFO_64,
+                                      reinterpret_cast<vm_region_info_t>(&info),
+                                      &count,
+                                      &object);
+    free(sample_alloc);
+    if (kr != KERN_SUCCESS) {
+        std::cerr << "mach_vm_region failed for heap: " << mach_error_string(kr) << "\n";
+        return {nullptr, nullptr};
+    }
+    std::cout << "Heap region: 0x" << std::hex << address << " - 0x"
+              << (address + size) << std::dec << "\n";
+    return { reinterpret_cast<void*>(address),
+             reinterpret_cast<void*>(address + size) };
 }
 
 void try_access_memory(uintptr_t addr) {
+    std::cout << "    [*] Setting up sigsetjmp for address: 0x"
+              << std::hex << addr << std::dec << "\n";
     if (sigsetjmp(env, 1) == 0) {
         std::cout << "    [*] Attempting to access memory at address: 0x"
                   << std::hex << addr << std::dec << "\n";
         volatile int* ptr = reinterpret_cast<int*>(addr);
-        std::cout << "    [*] Value: " << *ptr << "\n";
+        volatile int value = *ptr; // Force memory access
+        std::cout << "    [*] Value: " << value << "\n";
     } else {
         std::cout << "    [+] Recovered from segmentation fault.\n";
     }
@@ -103,6 +131,7 @@ void try_access_memory(uintptr_t addr) {
 static sigjmp_buf env;
 
 void segv_handler(int sig) {
+    std::cerr << "    [!] Caught SIGSEGV at signal: " << sig << "\n";
     siglongjmp(env, 1);
 }
 
@@ -119,9 +148,12 @@ std::pair<void*, void*> get_stack_bounds() {
                 std::stoull(addr_range.substr(0, dash), nullptr, 16));
             void* end = reinterpret_cast<void*>(
                 std::stoull(addr_range.substr(dash + 1), nullptr, 16));
+            std::cout << "Stack region: 0x" << std::hex << start << " - 0x"
+                      << end << std::dec << "\n";
             return {start, end};
         }
     }
+    std::cerr << "Failed to find stack in /proc/self/maps\n";
     return {nullptr, nullptr};
 }
 
@@ -138,18 +170,24 @@ std::pair<void*, void*> get_heap_bounds() {
                 std::stoull(addr_range.substr(0, dash), nullptr, 16));
             void* end = reinterpret_cast<void*>(
                 std::stoull(addr_range.substr(dash + 1), nullptr, 16));
+            std::cout << "Heap region: 0x" << std::hex << start << " - 0x"
+                      << end << std::dec << "\n";
             return {start, end};
         }
     }
+    std::cerr << "Failed to find heap in /proc/self/maps\n";
     return {nullptr, nullptr};
 }
 
 void try_access_memory(uintptr_t addr) {
+    std::cout << "    [*] Setting up sigsetjmp for address: 0x"
+              << std::hex << addr << std::dec << "\n";
     if (sigsetjmp(env, 1) == 0) {
         std::cout << "    [*] Attempting to access memory at address: 0x"
                   << std::hex << addr << std::dec << "\n";
         volatile int* ptr = reinterpret_cast<int*>(addr);
-        std::cout << "    [*] Value: " << *ptr << "\n";
+        volatile int value = *ptr;
+        std::cout << "    [*] Value: " << value << "\n";
     } else {
         std::cout << "    [+] Recovered from segmentation fault.\n";
     }
@@ -160,7 +198,8 @@ void try_access_memory(uintptr_t addr) {
 #endif
 
 void test_memory_range(uintptr_t start, uintptr_t end, const std::string& name) {
-    std::cout << "[*] " << name << "\n";
+    std::cout << "[*] Testing " << name << " range: 0x" << std::hex << start
+              << " - 0x" << end << std::dec << "\n";
     std::cout << "[*] " << name << " start - 1: 0x" << std::hex << (start - 1) << std::dec << "\n";
     try_access_memory(start - 1); std::cout << "\n";
     std::cout << "[*] " << name << " start: 0x" << std::hex << start << std::dec << "\n";
@@ -186,8 +225,11 @@ int main() {
     struct sigaction sa;
     sa.sa_handler = segv_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGSEGV, &sa, nullptr);
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGSEGV, &sa, nullptr) != 0) {
+        std::cerr << "[!] Failed to set up SIGSEGV handler\n";
+        return 1;
+    }
     auto [stack_start, stack_end] = get_stack_bounds();
     auto [heap_start,  heap_end]  = get_heap_bounds();
 #endif
@@ -198,7 +240,7 @@ int main() {
     }
 
     std::cout << "Stack  : " << stack_start << " - " << stack_end << "\n";
-    std::cout << "Heap   : "  << heap_start  << " - " << heap_end  << "\n\n";
+    std::cout << "Heap   : " << heap_start  << " - " << heap_end  << "\n\n";
 
     std::cout << "[*] Attempting to access memory in various regions...\n\n";
     test_memory_range(reinterpret_cast<uintptr_t>(stack_start),
