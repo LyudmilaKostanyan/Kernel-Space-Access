@@ -13,4 +13,4 @@ else()
     list(APPEND SOURCES src/memory_utils_posix.cpp)
 endif()
 
-add_executable(${PROJECT_NAME} ${SOURCES})
+add_executable(main ${SOURCES})
