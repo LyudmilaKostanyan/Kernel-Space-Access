@@ -2,13 +2,14 @@
 #include <utility>
 #include <cstdint>
 #include <cstdlib>
+#include <setjmp.h>
+#include <signal.h>
 
 #if defined(_WIN32)
 #include <windows.h>
 
 std::pair<void*, void*> get_stack_bounds() {
     MEMORY_BASIC_INFORMATION mbi;
-    // Take the address of a local variable to locate the current stack region
     VirtualQuery(&mbi, &mbi, sizeof(mbi));
     void* stack_top = mbi.BaseAddress;
     void* stack_bottom = mbi.AllocationBase;
@@ -16,7 +17,6 @@ std::pair<void*, void*> get_stack_bounds() {
 }
 
 std::pair<void*, void*> get_heap_bounds() {
-    // Allocate one byte to find the heap region
     void* heap_alloc = HeapAlloc(GetProcessHeap(), 0, 1);
     MEMORY_BASIC_INFORMATION mbi;
     VirtualQuery(heap_alloc, &mbi, sizeof(mbi));
@@ -48,6 +48,12 @@ void try_access_memory(uintptr_t addr) {
 #include <mach/mach_vm.h>
 #include <mach/vm_region.h>
 #include <sys/mman.h>
+
+static sigjmp_buf env;
+
+void segv_handler(int sig) {
+    siglongjmp(env, 1);
+}
 
 std::pair<void*, void*> get_stack_bounds() {
     vm_address_t address = reinterpret_cast<vm_address_t>(&address);
@@ -94,6 +100,12 @@ void try_access_memory(uintptr_t addr) {
 #include <fstream>
 #include <string>
 #include <sstream>
+
+static sigjmp_buf env;
+
+void segv_handler(int sig) {
+    siglongjmp(env, 1);
+}
 
 std::pair<void*, void*> get_stack_bounds() {
     std::ifstream maps("/proc/self/maps");
@@ -172,7 +184,11 @@ int main() {
     auto [stack_start, stack_end] = get_stack_bounds();
     auto [heap_start,  heap_end]  = get_heap_bounds();
 #else
-    extern sigjmp_buf env; // for POSIX platforms
+    struct sigaction sa;
+    sa.sa_handler = segv_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGSEGV, &sa, nullptr);
     auto [stack_start, stack_end] = get_stack_bounds();
     auto [heap_start,  heap_end]  = get_heap_bounds();
 #endif
