@@ -31,29 +31,31 @@ std::pair<void*, void*> get_heap_bounds() {
 }
 
 #elif defined(__APPLE__)
-#include <mach/mach.h>
+#include <unistd.h>
 #include <mach/task.h>
 #include <mach/vm_map.h>
 #include <sys/mman.h>
-#include <unistd.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_region.h>
 
 std::pair<void*, void*> get_stack_bounds() {
-    void* addr = &addr;
-    vm_address_t base = reinterpret_cast<vm_address_t>(addr);
-    vm_size_t size;
+    vm_address_t address = reinterpret_cast<vm_address_t>(&address);
+    mach_vm_size_t size = 0;
     vm_region_basic_info_data_64_t info;
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     memory_object_name_t object;
     kern_return_t kr = mach_vm_region(mach_task_self(),
-                                      reinterpret_cast<mach_vm_address_t*>(&base),
+                                      &reinterpret_cast<mach_vm_address_t&>(address),
                                       &size,
                                       VM_REGION_BASIC_INFO_64,
                                       reinterpret_cast<vm_region_info_t>(&info),
                                       &count,
                                       &object);
-    void* start = reinterpret_cast<void*>(base);
-    void* end = reinterpret_cast<void*>(base + size);
-    return {start, end};
+    if (kr != KERN_SUCCESS) {
+    }
+    return { reinterpret_cast<void*>(address),
+             reinterpret_cast<void*>(address + size) };
 }
 
 std::pair<void*, void*> get_heap_bounds() {
