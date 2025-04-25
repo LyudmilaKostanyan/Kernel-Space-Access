@@ -61,8 +61,6 @@ std::pair<void*, void*> get_stack_bounds() {
     void* stack_top = pthread_get_stackaddr_np(self);
     size_t stack_size = pthread_get_stacksize_np(self);
     void* stack_bottom = static_cast<char*>(stack_top) - stack_size;
-    std::cout << "Stack region: 0x" << std::hex << stack_bottom << " - 0x"
-              << stack_top << std::dec << "\n";
     return { stack_bottom, stack_top };
 }
 
@@ -89,8 +87,6 @@ std::pair<void*, void*> get_heap_bounds() {
         std::cerr << "mach_vm_region failed for heap: " << mach_error_string(kr) << "\n";
         return {nullptr, nullptr};
     }
-    std::cout << "Heap region: 0x" << std::hex << address << " - 0x"
-              << (address + size) << std::dec << "\n";
     return { reinterpret_cast<void*>(address),
              reinterpret_cast<void*>(address + size) };
 }
@@ -135,8 +131,6 @@ std::pair<void*, void*> get_stack_bounds() {
                 std::stoull(addr_range.substr(0, dash), nullptr, 16));
             void* end = reinterpret_cast<void*>(
                 std::stoull(addr_range.substr(dash + 1), nullptr, 16));
-            std::cout << "Stack region: 0x" << std::hex << start << " - 0x"
-                      << end << std::dec << "\n";
             return {start, end};
         }
     }
@@ -157,8 +151,6 @@ std::pair<void*, void*> get_heap_bounds() {
                 std::stoull(addr_range.substr(0, dash), nullptr, 16));
             void* end = reinterpret_cast<void*>(
                 std::stoull(addr_range.substr(dash + 1), nullptr, 16));
-            std::cout << "Heap region: 0x" << std::hex << start << " - 0x"
-                      << end << std::dec << "\n";
             return {start, end};
         }
     }
@@ -184,14 +176,27 @@ void try_access_memory(uintptr_t addr) {
 #error "Unsupported platform"
 #endif
 
-void test_memory_range(uintptr_t start, uintptr_t end, const std::string& name) {
-    std::cout << "[*] Testing " << name << " range: 0x" << std::hex << start
-              << " - 0x" << end << std::dec << "\n";
-    std::cout << "[*] " << name << " start: 0x" << std::hex << start << std::dec << "\n";
-    try_access_memory(start); std::cout << "\n";
-    std::cout << "[*] " << name << " middle: 0x"
-              << std::hex << (start + (end - start) / 2) << std::dec << "\n";
-    try_access_memory(start + (end - start) / 2); std::cout << "\n";
+void test_memory_range(uintptr_t start, uintptr_t end, std::string name) 
+{
+    std::cout << "[*] " << name << std::endl;
+    std::cout << "[*] " << name << " start - 1: " << start - 1 << "\n";
+    try_access_memory(start - 1);
+    std::cout << std::endl;
+    std::cout << "[*] " << name << " start: " << start << "\n";
+    try_access_memory(start);
+    std::cout << std::endl;
+    std::cout << "[*] " << name << " middle: " << start + ((end - start) / 2) << "\n";
+    try_access_memory(start + ((end - start) / 2));
+    std::cout << std::endl;
+    std::cout << "[*] " << name << " end - 1: " << end - 1 << "\n";
+    try_access_memory(end - 1);
+    std::cout << std::endl;
+    std::cout << "[*] " << name << " end: " << end << "\n";
+    try_access_memory(end);
+    std::cout << std::endl;
+    std::cout << "[*] " << name << " end + 1: " << end + 1 << "\n";
+    try_access_memory(end + 1);
+    std::cout << std::endl;
 }
 
 int main() {
