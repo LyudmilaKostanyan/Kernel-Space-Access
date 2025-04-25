@@ -1,43 +1,53 @@
 #include <iostream>
-#include <csignal>
-#include <cstdlib>
-#include <setjmp.h>
 #include <utility>
 #include <cstdint>
-
-sigjmp_buf env;
-
+#include <cstdlib>
 
 #if defined(_WIN32)
 #include <windows.h>
 
 std::pair<void*, void*> get_stack_bounds() {
     MEMORY_BASIC_INFORMATION mbi;
-    int local = 0;
-    VirtualQuery(&local, &mbi, sizeof(mbi));
+    // Take the address of a local variable to locate the current stack region
+    VirtualQuery(&mbi, &mbi, sizeof(mbi));
     void* stack_top = mbi.BaseAddress;
     void* stack_bottom = mbi.AllocationBase;
-    return {stack_bottom, stack_top};
+    return { stack_bottom, stack_top };
 }
 
 std::pair<void*, void*> get_heap_bounds() {
-    void* heap = HeapAlloc(GetProcessHeap(), 0, 1);
+    // Allocate one byte to find the heap region
+    void* heap_alloc = HeapAlloc(GetProcessHeap(), 0, 1);
     MEMORY_BASIC_INFORMATION mbi;
-    VirtualQuery(heap, &mbi, sizeof(mbi));
+    VirtualQuery(heap_alloc, &mbi, sizeof(mbi));
     void* heap_base = mbi.AllocationBase;
-    void* heap_end = static_cast<char*>(mbi.BaseAddress) + mbi.RegionSize;
-    HeapFree(GetProcessHeap(), 0, heap);
-    return {heap_base, heap_end};
+    void* heap_end  = static_cast<char*>(mbi.BaseAddress) + mbi.RegionSize;
+    HeapFree(GetProcessHeap(), 0, heap_alloc);
+    return { heap_base, heap_end };
+}
+
+void try_access_memory(uintptr_t addr) {
+    std::cout << "    [*] Attempting to access memory at address: 0x"
+              << std::hex << addr << std::dec << "\n";
+    __try {
+        volatile int value = *reinterpret_cast<volatile int*>(addr);
+        std::cout << "    [*] Value: " << value << "\n";
+    }
+    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+              ? EXCEPTION_EXECUTE_HANDLER
+              : EXCEPTION_CONTINUE_SEARCH) {
+        std::cout << "    [!] Caught access violation at address 0x"
+                  << std::hex << addr << std::dec << "\n";
+    }
 }
 
 #elif defined(__APPLE__)
 #include <unistd.h>
 #include <mach/task.h>
 #include <mach/vm_map.h>
-#include <sys/mman.h>
-#include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach/vm_region.h>
+#include <sys/mman.h>
 
 std::pair<void*, void*> get_stack_bounds() {
     vm_address_t address = reinterpret_cast<vm_address_t>(&address);
@@ -62,11 +72,21 @@ std::pair<void*, void*> get_stack_bounds() {
 
 std::pair<void*, void*> get_heap_bounds() {
     void* heap_end = sbrk(0);
-    void* heap_start = nullptr;
-
     long pagesize = sysconf(_SC_PAGESIZE);
-    heap_start = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(heap_end) / pagesize - 1000) * pagesize);
+    void* heap_start = reinterpret_cast<void*>(
+        (reinterpret_cast<uintptr_t>(heap_end) / pagesize - 1000) * pagesize);
     return {heap_start, heap_end};
+}
+
+void try_access_memory(uintptr_t addr) {
+    if (sigsetjmp(env, 1) == 0) {
+        std::cout << "    [*] Attempting to access memory at address: 0x"
+                  << std::hex << addr << std::dec << "\n";
+        volatile int* ptr = reinterpret_cast<int*>(addr);
+        std::cout << "    [*] Value: " << *ptr << "\n";
+    } else {
+        std::cout << "    [+] Recovered from segmentation fault.\n";
+    }
 }
 
 #elif defined(__linux__)
@@ -84,8 +104,10 @@ std::pair<void*, void*> get_stack_bounds() {
             std::string addr_range;
             iss >> addr_range;
             auto dash = addr_range.find('-');
-            void* start = reinterpret_cast<void*>(std::stoull(addr_range.substr(0, dash), nullptr, 16));
-            void* end = reinterpret_cast<void*>(std::stoull(addr_range.substr(dash + 1), nullptr, 16));
+            void* start = reinterpret_cast<void*>(
+                std::stoull(addr_range.substr(0, dash), nullptr, 16));
+            void* end = reinterpret_cast<void*>(
+                std::stoull(addr_range.substr(dash + 1), nullptr, 16));
             return {start, end};
         }
     }
@@ -101,97 +123,73 @@ std::pair<void*, void*> get_heap_bounds() {
             std::string addr_range;
             iss >> addr_range;
             auto dash = addr_range.find('-');
-            void* start = reinterpret_cast<void*>(std::stoull(addr_range.substr(0, dash), nullptr, 16));
-            void* end = reinterpret_cast<void*>(std::stoull(addr_range.substr(dash + 1), nullptr, 16));
+            void* start = reinterpret_cast<void*>(
+                std::stoull(addr_range.substr(0, dash), nullptr, 16));
+            void* end = reinterpret_cast<void*>(
+                std::stoull(addr_range.substr(dash + 1), nullptr, 16));
             return {start, end};
         }
     }
     return {nullptr, nullptr};
 }
 
+void try_access_memory(uintptr_t addr) {
+    if (sigsetjmp(env, 1) == 0) {
+        std::cout << "    [*] Attempting to access memory at address: 0x"
+                  << std::hex << addr << std::dec << "\n";
+        volatile int* ptr = reinterpret_cast<int*>(addr);
+        std::cout << "    [*] Value: " << *ptr << "\n";
+    } else {
+        std::cout << "    [+] Recovered from segmentation fault.\n";
+    }
+}
+
 #else
 #error "Unsupported platform"
 #endif
 
-void signalHandler(int signal) {
-    switch (signal) {
-        case SIGSEGV:
-            std::cerr << "    [!] Caught SIGSEGV: Segmentation fault.\n";
-            break;
-        case SIGBUS:
-            std::cerr << "    [!] Caught SIGBUS: Bus error (bad alignment or page).\n";
-            break;
-        case SIGABRT:
-            std::cerr << "    [!] Caught SIGABRT: Aborted.\n";
-            break;
-        case SIGILL:
-            std::cerr << "    [!] Caught SIGILL: Illegal instruction.\n";
-            break;
-        default:
-            std::cerr << "    [!] Caught unknown signal: " << signal << "\n";
-            break;
-    }
-    std::cerr << "    [!] Attempted to access restricted memory (likely kernel space).\n";
-    std::cerr << "    [!] Jumping back to recovery point.\n";
-    siglongjmp(env, 1);
-}
-
-void setupSignalHandlers() {
-    std::signal(SIGSEGV, signalHandler);
-    std::signal(SIGBUS, signalHandler);
-    std::signal(SIGABRT, signalHandler);
-    std::signal(SIGILL, signalHandler);
-}
-
-void try_access_memory(auto addr) {
-    if (sigsetjmp(env, 1) == 0) {
-        std::cout << "    [*] Attempting to access memory at address: " << std::hex << addr << "\n";
-
-        volatile int* ptr = reinterpret_cast<int*>(addr);
-        std::cout << "    [*] Value: " << *ptr << "\n";
-    } else
-        std::cout << "    [+] Recovered from segmentation fault and continued execution.\n";
-}
-
-void test_memory_range(uintptr_t start, uintptr_t end, std::string name) 
-{
-    std::cout << "[*] " << name << std::endl;
-    std::cout << "[*] " << name << " start - 1: " << start - 1 << "\n";
-    try_access_memory(start - 1);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " start: " << start << "\n";
-    try_access_memory(start);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " middle: " << start + ((end - start) / 2) << "\n";
-    try_access_memory(start + ((end - start) / 2));
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " end - 1: " << end - 1 << "\n";
-    try_access_memory(end - 1);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " end: " << end << "\n";
-    try_access_memory(end);
-    std::cout << std::endl;
-    std::cout << "[*] " << name << " end + 1: " << end + 1 << "\n";
-    try_access_memory(end + 1);
-    std::cout << std::endl;
+void test_memory_range(uintptr_t start, uintptr_t end, const std::string& name) {
+    std::cout << "[*] " << name << "\n";
+    std::cout << "[*] " << name << " start - 1: 0x" << std::hex << (start - 1) << std::dec << "\n";
+    try_access_memory(start - 1); std::cout << "\n";
+    std::cout << "[*] " << name << " start: 0x" << std::hex << start << std::dec << "\n";
+    try_access_memory(start);     std::cout << "\n";
+    std::cout << "[*] " << name << " middle: 0x"
+              << std::hex << (start + (end - start) / 2) << std::dec << "\n";
+    try_access_memory(start + (end - start) / 2); std::cout << "\n";
+    std::cout << "[*] " << name << " end - 1: 0x" << std::hex << (end - 1) << std::dec << "\n";
+    try_access_memory(end - 1);   std::cout << "\n";
+    std::cout << "[*] " << name << " end: 0x" << std::hex << end << std::dec << "\n";
+    try_access_memory(end);       std::cout << "\n";
+    std::cout << "[*] " << name << " end + 1: 0x" << std::hex << (end + 1) << std::dec << "\n";
+    try_access_memory(end + 1);   std::cout << "\n";
 }
 
 int main() {
-    std::cout << "=== Memory Violation Exploration with sigsetjmp ===\n\n";
+    std::cout << "=== Memory Violation Exploration ===\n\n";
 
-    setupSignalHandlers();
+#if defined(_WIN32)
     auto [stack_start, stack_end] = get_stack_bounds();
-    auto [heap_start, heap_end] = get_heap_bounds();
-    if (stack_start == nullptr || stack_end == nullptr || heap_start == nullptr || heap_end == nullptr) {
+    auto [heap_start,  heap_end]  = get_heap_bounds();
+#else
+    extern sigjmp_buf env; // for POSIX platforms
+    auto [stack_start, stack_end] = get_stack_bounds();
+    auto [heap_start,  heap_end]  = get_heap_bounds();
+#endif
+
+    if (!stack_start || !stack_end || !heap_start || !heap_end) {
         std::cerr << "[!] Failed to get stack or heap bounds.\n";
         return 1;
     }
-    std::cout << "Stack  : " << stack_start << " - " << stack_end << "\n";
-    std::cout << "Heap   : " << heap_start << " - " << heap_end << "\n";
 
-    std::cout << "\n[*] Attempting to access memory in various regions...\n\n";
-    test_memory_range(reinterpret_cast<uintptr_t>(stack_start), reinterpret_cast<uintptr_t>(stack_end), "Stack");
-    test_memory_range(reinterpret_cast<uintptr_t>(heap_start), reinterpret_cast<uintptr_t>(heap_end), "Heap");
+    std::cout << "Stack  : " << stack_start << " - " << stack_end << "\n";
+    std::cout << "Heap   : "  << heap_start  << " - " << heap_end  << "\n\n";
+
+    std::cout << "[*] Attempting to access memory in various regions...\n\n";
+    test_memory_range(reinterpret_cast<uintptr_t>(stack_start),
+                      reinterpret_cast<uintptr_t>(stack_end), "Stack");
+    test_memory_range(reinterpret_cast<uintptr_t>(heap_start),
+                      reinterpret_cast<uintptr_t>(heap_end),   "Heap");
 
     return 0;
 }
