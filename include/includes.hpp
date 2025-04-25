@@ -4,19 +4,20 @@
 #include <utility>
 #include <cstdint>
 #include <cstdlib>
-#include <unistd.h>
-#include <csignal>
-#include <csetjmp>
-#include <pthread.h>
 
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
-#include <mach/vm_region.h>
-#endif
+#ifdef _WIN32
+  #include <windows.h>
+#else
+  #include <unistd.h>
+  #include <csignal>
+  #include <csetjmp>
+  #include <pthread.h>
 
-#if defined(_WIN32)
-#include <windows.h>
+  #if defined(__APPLE__)
+    #include <mach/mach.h>
+    #include <mach/mach_vm.h>
+    #include <mach/vm_region.h>
+  #endif
 #endif
 
 std::pair<void*, void*> get_stack_bounds();
